@@ -2,56 +2,53 @@
 #include <stdlib.h>
 #include <iostream>
 #include <vector>
-#include <algorithm>
 #include <time.h>
+#include <ostream>
+#include <algorithm>
 
 int main(int argc, char *argv[]) {
     if (argc < 4) {
-        std::cout << "Usage: " << argv[0] << " <num_alignments> <seq_len> <error_rate> [same|different]" << std::endl;
-        return 1;
+        std::cout << "Required arguments: number of couples, sequences length, error rate" << std::endl;
+        exit(1);
     }
 
     int num = atoi(argv[1]);
     int seq_size = atoi(argv[2]);
     unsigned int error_rate = atoi(argv[3]);
-    unsigned int num_errors = (seq_size * error_rate) / 100;
-    if (error_rate > 0 && num_errors == 0) num_errors = 1;
-
-    std::string mode = (argc > 4) ? argv[4] : "same";
-    if (mode != "same" && mode != "different") {
-        std::cerr << "Invalid mode. Use 'same' or 'different'." << std::endl;
-        return 1;
-    }
-
+    unsigned int num_errors = ((seq_size * error_rate) / 100);
+    std::vector<int> random_position(seq_size);
     char alphabet[4] = {'A', 'C', 'G', 'T'};
-    char *pattern = (char *)malloc(seq_size + 1);
-    char *text = (char *)malloc(seq_size + 1);
+    char *pattern = (char *)malloc(sizeof(char) * seq_size);
+    char *text = (char *)malloc(sizeof(char) * seq_size);
     FILE *seq_file = fopen("sequences.txt", "w");
 
-    srand(time(NULL));
+    for (int i = 0; i < seq_size; random_position[i] = i, i++);
+
+    std::random_shuffle(random_position.begin(), random_position.end());
+
+    int seed = time(NULL);
+    srand(seed);
+
     fprintf(seq_file, "%d %d %d\n", num, seq_size, seq_size);
+
+    unsigned ran_idx = 0;
 
     for (int n = 0; n < num; n++) {
         for (int j = 0; j < seq_size; j++) {
             text[j] = alphabet[rand() % 4];
-            pattern[j] = (mode == "same") ? text[j] : alphabet[rand() % 4];
+            pattern[j] = text[j];
         }
-        text[seq_size] = '\0';
-        pattern[seq_size] = '\0';
 
-        if (mode == "same" && num_errors > 0) {
-            std::vector<int> random_position(seq_size);
-            for (int i = 0; i < seq_size; i++) random_position[i] = i;
-            std::random_shuffle(random_position.begin(), random_position.end());
-
-            for (unsigned int j = 0; j < num_errors; j++) {
-                int idx = random_position[j];
-                char old_char = pattern[idx];
-                char new_char;
-                do {
-                    new_char = alphabet[rand() % 4];
-                } while (new_char == old_char);
-                pattern[idx] = new_char;
+        // insert errors
+        #pragma omp parallel for
+        for (int j = 0; j < num_errors; j++) {
+            int idx = random_position[ran_idx];
+            ran_idx++;
+            ran_idx = ran_idx % seq_size;
+            int old = pattern[idx];
+            pattern[idx] = alphabet[rand() % 4];
+            while (pattern[idx] == old) {
+                pattern[idx] = alphabet[rand() % 4];
             }
         }
 
@@ -60,11 +57,6 @@ int main(int argc, char *argv[]) {
     }
 
     fclose(seq_file);
-    free(pattern);
-    free(text);
-
-    printf("Generated %d alignments of length %d with %d error(s) in mode '%s'.\n",
-           num, seq_size, num_errors, mode.c_str());
 
     return 0;
 }

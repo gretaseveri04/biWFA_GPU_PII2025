@@ -601,10 +601,12 @@ __device__ void overlap(const int score_0, const wf_components_t *wf_0, const in
     }
 }
 
+
 __global__ void biWFA_kernel(char *pattern_concat_g, char *text_concat_g, char *pattern_r_concat_g, char *text_r_concat_g, int *pattern_lengths_g, int *text_lengths_g,
     int *pattern_offsets_g, int *text_offsets_g, int *breakpoint_score_g, wf_t *mwavefronts_f, wf_t *iwavefronts_f, wf_t *dwavefronts_f, wf_t *mwavefronts_r, wf_t *iwavefronts_r,
     wf_t *dwavefronts_r, const int lo_g, const int hi_g, int32_t *offsets_g, const int max_score_scope, int32_t *matrix_wf_m_f, int32_t *matrix_wf_i_f, int32_t *matrix_wf_d_f,
-    int32_t *matrix_wf_m_r, int32_t *matrix_wf_i_r, int32_t *matrix_wf_d_r) {
+    int32_t *matrix_wf_m_r, int32_t *matrix_wf_i_r, int32_t *matrix_wf_d_r) 
+{
     int alignment_id = blockIdx.x;
     int lo = lo_g;
     int hi = hi_g;
@@ -619,33 +621,32 @@ __global__ void biWFA_kernel(char *pattern_concat_g, char *text_concat_g, char *
     char *pattern_r = pattern_r_concat_g + pattern_offset;
     char *text_r = text_r_concat_g + text_offset;
 
-    for (int i = 0; i < num_wavefronts * wf_length; i += blockDim.x) {
-        if (i + threadIdx.x < num_wavefronts * wf_length) {
-            int base_idx = num_wavefronts * wf_length * alignment_id + (i + threadIdx.x);
-            matrix_wf_m_f[base_idx] = OFFSET_NULL;
-            matrix_wf_i_f[base_idx] = OFFSET_NULL;
-            matrix_wf_d_f[base_idx] = OFFSET_NULL;
-            matrix_wf_m_r[base_idx] = OFFSET_NULL;
-            matrix_wf_i_r[base_idx] = OFFSET_NULL;
-            matrix_wf_d_r[base_idx] = OFFSET_NULL;
-        }
+    int total_offsets_size = num_wavefronts * wf_length;
+    for (int i = threadIdx.x; i < total_offsets_size; i += blockDim.x) {
+        int base_idx = alignment_id * total_offsets_size + i;
+        matrix_wf_m_f[base_idx] = OFFSET_NULL;
+        matrix_wf_i_f[base_idx] = OFFSET_NULL;
+        matrix_wf_d_f[base_idx] = OFFSET_NULL;
+        matrix_wf_m_r[base_idx] = OFFSET_NULL;
+        matrix_wf_i_r[base_idx] = OFFSET_NULL;
+        matrix_wf_d_r[base_idx] = OFFSET_NULL;
     }
+    __syncthreads();
 
-    for (int i = 0; i < num_wavefronts; i += blockDim.x) {
-        if (i + threadIdx.x < num_wavefronts) {
-            int base_idx = num_wavefronts * alignment_id + (i + threadIdx.x);
-            wf_t *wfs[] = { &mwavefronts_f[base_idx], &iwavefronts_f[base_idx], &dwavefronts_f[base_idx],
-                            &mwavefronts_r[base_idx], &iwavefronts_r[base_idx], &dwavefronts_r[base_idx] };
-            for (int w = 0; w < 6; ++w) {
-                wfs[w]->null = true;
-                wfs[w]->lo = 0;
-                wfs[w]->hi = 0;
-                wfs[w]->offsets = NULL;
-                wfs[w]->wf_elements_init_min = 0;
-                wfs[w]->wf_elements_init_max = 0;
-            }
+    for (int i = threadIdx.x; i < num_wavefronts; i += blockDim.x) {
+        int base_idx = alignment_id * num_wavefronts + i;
+        wf_t *wfs[] = { &mwavefronts_f[base_idx], &iwavefronts_f[base_idx], &dwavefronts_f[base_idx],
+                        &mwavefronts_r[base_idx], &iwavefronts_r[base_idx], &dwavefronts_r[base_idx] };
+        for (int w = 0; w < 6; ++w) {
+            wfs[w]->null = true;
+            wfs[w]->lo = 0;
+            wfs[w]->hi = 0;
+            wfs[w]->offsets = NULL;
+            wfs[w]->wf_elements_init_min = 0;
+            wfs[w]->wf_elements_init_max = 0;
         }
     }
+    __syncthreads();
 
     wf_components_t wf_f, wf_r;
     wf_alignment_t alignment_f, alignment_r;
@@ -678,9 +679,9 @@ __global__ void biWFA_kernel(char *pattern_concat_g, char *text_concat_g, char *
         int32_t *matrix_i = (dir == 0) ? matrix_wf_i_f : matrix_wf_i_r;
         int32_t *matrix_d = (dir == 0) ? matrix_wf_d_f : matrix_wf_d_r;
 
-        wf->mwavefronts[0].offsets = matrix_m + num_wavefronts * wf_length * alignment_id + 0 * wf_length + wf_length / 2;
-        wf->iwavefronts[0].offsets = matrix_i + num_wavefronts * wf_length * alignment_id + 0 * wf_length + wf_length / 2;
-        wf->dwavefronts[0].offsets = matrix_d + num_wavefronts * wf_length * alignment_id + 0 * wf_length + wf_length / 2;
+        wf->mwavefronts[0].offsets = matrix_m + alignment_id * total_offsets_size + 0 * wf_length + wf_length / 2;
+        wf->iwavefronts[0].offsets = matrix_i + alignment_id * total_offsets_size + 0 * wf_length + wf_length / 2;
+        wf->dwavefronts[0].offsets = matrix_d + alignment_id * total_offsets_size + 0 * wf_length + wf_length / 2;
 
         wf->mwavefronts[0].null = false;
         wf->mwavefronts[0].lo = -1;
@@ -925,33 +926,10 @@ int main(int argc, char *argv[]) {
 
             bool all_correct = true;
 
-            bool should_check_all = (offset == 0);
-        int num_checks = should_check_all ? current_batch_size : 2;
+         int num_checks = current_batch_size;
+         printf("\nCheck CPU-WFA on %d alignments of batch %d-%d:\n", num_checks, offset, offset + current_batch_size - 1);
 
-        int check_indices[2];  
-        int num_selected = 0;
 
-        if (!should_check_all) {
-            srand(time(NULL) + offset);
-            while (num_selected < num_checks) {
-                int idx = rand() % current_batch_size;
-
-                bool already_selected = false;
-                for (int k = 0; k < num_selected; ++k) {
-                    if (check_indices[k] == idx) {
-                        already_selected = true;
-                        break;
-                    }
-                }
-
-                if (!already_selected) {
-                    check_indices[num_selected] = idx;
-                    num_selected++;
-                }
-            }
-        }
-
-        printf("\nCheck CPU-WFA on %d alignments of batch %d-%d:\n", num_checks, offset, offset + current_batch_size - 1);
         wavefront_aligner_attr_t attributes = wavefront_aligner_attr_default;
         attributes.distance_metric = gap_affine;
         attributes.affine_penalties.mismatch = penalty_mismatch;
@@ -959,8 +937,7 @@ int main(int argc, char *argv[]) {
         attributes.affine_penalties.gap_extension = penalty_gap_ext;
         wavefront_aligner_t *wf_aligner = wavefront_aligner_new(&attributes);
 
-        for (int i = 0; i < num_checks; ++i) {
-            int check_idx = should_check_all ? i : check_indices[i];
+        for (int check_idx = 0; check_idx < current_batch_size; ++check_idx) {
             const char *pattern = pattern_concat + pattern_offsets[check_idx];
             const char *text = text_concat + text_offsets[check_idx];
             wavefront_align(wf_aligner, pattern, pattern_len, text, text_len);
