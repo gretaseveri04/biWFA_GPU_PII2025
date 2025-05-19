@@ -6,6 +6,8 @@ extern "C" {
 #include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
+#include <fstream>
+#include <vector>
 #include "headers/commons.h"
 #include "headers/biWFA.h"
 #include <chrono>
@@ -752,8 +754,8 @@ __global__ void biWFA_kernel(char *pattern_concat_g, char *text_concat_g, char *
 }
 
 int main(int argc, char *argv[]) {
-    if (argc != 2) {
-        printf("Usage: %s <input_file>\n", argv[0]);
+    if (argc != 3) {
+        printf("Usage: %s <input_file> <output_csv>\n", argv[0]);
         return 1;
     }
 
@@ -763,10 +765,18 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    FILE *csv_file = fopen(argv[2], "w");
+    if (!csv_file) {
+        perror("CSV file open error");
+        fclose(fp);
+        return 1;
+    }
+
     int num_alignments, pattern_len, text_len;
     if (fscanf(fp, "%d %d %d\n", &num_alignments, &pattern_len, &text_len) != 3) {
         printf("Error reading header.\n");
         fclose(fp);
+        fclose(csv_file);
         return 1;
     }
 
@@ -783,16 +793,20 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Not enough memory for even a single alignment.\n");
         free(gpu_scores);
         fclose(fp);
+        fclose(csv_file);
         return 1;
     }
 
     printf("GPU Memory - Free: %zu bytes\n", free_mem);
 
+    int correct_alignments = 0; 
     char temp_buffer[1024];
     for (int offset = 0; offset < num_alignments; offset += max_batch_size) {
         int current_batch_size = (offset + max_batch_size <= num_alignments)
                                  ? max_batch_size
                                  : (num_alignments - offset);
+
+        auto batch_start = std::chrono::high_resolution_clock::now(); 
 
         int *pattern_lengths = (int *)malloc(sizeof(int) * current_batch_size);
         int *text_lengths = (int *)malloc(sizeof(int) * current_batch_size);
@@ -846,89 +860,85 @@ int main(int argc, char *argv[]) {
             free(text_offsets);
             free(gpu_scores);
             fclose(fp);
+            fclose(csv_file);
             return 1;
         }
 
-            char *d_pattern_concat, *d_text_concat, *d_pattern_r_concat, *d_text_r_concat;
-            int *d_pattern_lengths, *d_text_lengths, *d_pattern_offsets, *d_text_offsets, *d_breakpoint_score;
-            int32_t *d_offsets;
-            size_t matrix_size = matrix_size_per_alignment * current_batch_size;
+        char *d_pattern_concat, *d_text_concat, *d_pattern_r_concat, *d_text_r_concat;
+        int *d_pattern_lengths, *d_text_lengths, *d_pattern_offsets, *d_text_offsets, *d_breakpoint_score;
+        int32_t *d_offsets;
+        size_t matrix_size = matrix_size_per_alignment * current_batch_size;
 
-            wf_t *d_mwavefronts_f, *d_iwavefronts_f, *d_dwavefronts_f;
-            wf_t *d_mwavefronts_r, *d_iwavefronts_r, *d_dwavefronts_r;
-            int32_t *d_matrix_wf_m_f, *d_matrix_wf_i_f, *d_matrix_wf_d_f;
-            int32_t *d_matrix_wf_m_r, *d_matrix_wf_i_r, *d_matrix_wf_d_r;
+        wf_t *d_mwavefronts_f, *d_iwavefronts_f, *d_dwavefronts_f;
+        wf_t *d_mwavefronts_r, *d_iwavefronts_r, *d_dwavefronts_r;
+        int32_t *d_matrix_wf_m_f, *d_matrix_wf_i_f, *d_matrix_wf_d_f;
+        int32_t *d_matrix_wf_m_r, *d_matrix_wf_i_r, *d_matrix_wf_d_r;
 
-            CHECK(cudaMalloc(&d_pattern_concat, total_pattern_len));
-            CHECK(cudaMalloc(&d_text_concat, total_text_len));
-            CHECK(cudaMalloc(&d_pattern_r_concat, total_pattern_len));
-            CHECK(cudaMalloc(&d_text_r_concat, total_text_len));
-            CHECK(cudaMalloc(&d_pattern_lengths, sizeof(int) * current_batch_size));
-            CHECK(cudaMalloc(&d_text_lengths, sizeof(int) * current_batch_size));
-            CHECK(cudaMalloc(&d_pattern_offsets, sizeof(int) * current_batch_size));
-            CHECK(cudaMalloc(&d_text_offsets, sizeof(int) * current_batch_size));
-            CHECK(cudaMalloc(&d_breakpoint_score, sizeof(int) * current_batch_size));
-            CHECK(cudaMalloc(&d_offsets, sizeof(int32_t) * wf_length));
+        CHECK(cudaMalloc(&d_pattern_concat, total_pattern_len));
+        CHECK(cudaMalloc(&d_text_concat, total_text_len));
+        CHECK(cudaMalloc(&d_pattern_r_concat, total_pattern_len));
+        CHECK(cudaMalloc(&d_text_r_concat, total_text_len));
+        CHECK(cudaMalloc(&d_pattern_lengths, sizeof(int) * current_batch_size));
+        CHECK(cudaMalloc(&d_text_lengths, sizeof(int) * current_batch_size));
+        CHECK(cudaMalloc(&d_pattern_offsets, sizeof(int) * current_batch_size));
+        CHECK(cudaMalloc(&d_text_offsets, sizeof(int) * current_batch_size));
+        CHECK(cudaMalloc(&d_breakpoint_score, sizeof(int) * current_batch_size));
+        CHECK(cudaMalloc(&d_offsets, sizeof(int32_t) * wf_length));
 
-            CHECK(cudaMalloc(&d_mwavefronts_f, matrix_size));
-            CHECK(cudaMalloc(&d_iwavefronts_f, matrix_size));
-            CHECK(cudaMalloc(&d_dwavefronts_f, matrix_size));
-            CHECK(cudaMalloc(&d_mwavefronts_r, matrix_size));
-            CHECK(cudaMalloc(&d_iwavefronts_r, matrix_size));
-            CHECK(cudaMalloc(&d_dwavefronts_r, matrix_size));
-            CHECK(cudaMalloc(&d_matrix_wf_m_f, matrix_size));
-            CHECK(cudaMalloc(&d_matrix_wf_i_f, matrix_size));
-            CHECK(cudaMalloc(&d_matrix_wf_d_f, matrix_size));
-            CHECK(cudaMalloc(&d_matrix_wf_m_r, matrix_size));
-            CHECK(cudaMalloc(&d_matrix_wf_i_r, matrix_size));
-            CHECK(cudaMalloc(&d_matrix_wf_d_r, matrix_size));
+        CHECK(cudaMalloc(&d_mwavefronts_f, matrix_size));
+        CHECK(cudaMalloc(&d_iwavefronts_f, matrix_size));
+        CHECK(cudaMalloc(&d_dwavefronts_f, matrix_size));
+        CHECK(cudaMalloc(&d_mwavefronts_r, matrix_size));
+        CHECK(cudaMalloc(&d_iwavefronts_r, matrix_size));
+        CHECK(cudaMalloc(&d_dwavefronts_r, matrix_size));
+        CHECK(cudaMalloc(&d_matrix_wf_m_f, matrix_size));
+        CHECK(cudaMalloc(&d_matrix_wf_i_f, matrix_size));
+        CHECK(cudaMalloc(&d_matrix_wf_d_f, matrix_size));
+        CHECK(cudaMalloc(&d_matrix_wf_m_r, matrix_size));
+        CHECK(cudaMalloc(&d_matrix_wf_i_r, matrix_size));
+        CHECK(cudaMalloc(&d_matrix_wf_d_r, matrix_size));
 
-            CHECK(cudaMemcpy(d_pattern_concat, pattern_concat, total_pattern_len, cudaMemcpyHostToDevice));
-            CHECK(cudaMemcpy(d_text_concat, text_concat, total_text_len, cudaMemcpyHostToDevice));
-            CHECK(cudaMemcpy(d_pattern_r_concat, pattern_r_concat, total_pattern_len, cudaMemcpyHostToDevice));
-            CHECK(cudaMemcpy(d_text_r_concat, text_r_concat, total_text_len, cudaMemcpyHostToDevice));
-            CHECK(cudaMemcpy(d_pattern_lengths, pattern_lengths, sizeof(int) * current_batch_size, cudaMemcpyHostToDevice));
-            CHECK(cudaMemcpy(d_text_lengths, text_lengths, sizeof(int) * current_batch_size, cudaMemcpyHostToDevice));
-            CHECK(cudaMemcpy(d_pattern_offsets, pattern_offsets, sizeof(int) * current_batch_size, cudaMemcpyHostToDevice));
-            CHECK(cudaMemcpy(d_text_offsets, text_offsets, sizeof(int) * current_batch_size, cudaMemcpyHostToDevice));
+        CHECK(cudaMemcpy(d_pattern_concat, pattern_concat, total_pattern_len, cudaMemcpyHostToDevice));
+        CHECK(cudaMemcpy(d_text_concat, text_concat, total_text_len, cudaMemcpyHostToDevice));
+        CHECK(cudaMemcpy(d_pattern_r_concat, pattern_r_concat, total_pattern_len, cudaMemcpyHostToDevice));
+        CHECK(cudaMemcpy(d_text_r_concat, text_r_concat, total_text_len, cudaMemcpyHostToDevice)); // Corretto qui
+        CHECK(cudaMemcpy(d_pattern_lengths, pattern_lengths, sizeof(int) * current_batch_size, cudaMemcpyHostToDevice));
+        CHECK(cudaMemcpy(d_text_lengths, text_lengths, sizeof(int) * current_batch_size, cudaMemcpyHostToDevice));
+        CHECK(cudaMemcpy(d_pattern_offsets, pattern_offsets, sizeof(int) * current_batch_size, cudaMemcpyHostToDevice));
+        CHECK(cudaMemcpy(d_text_offsets, text_offsets, sizeof(int) * current_batch_size, cudaMemcpyHostToDevice));
 
-            int32_t *temp_offsets = (int32_t *)malloc(sizeof(int32_t) * wf_length);
-            for (int i = 0; i < wf_length; ++i) temp_offsets[i] = OFFSET_NULL;
-            CHECK(cudaMemcpy(d_offsets, temp_offsets, sizeof(int32_t) * wf_length, cudaMemcpyHostToDevice));
-            free(temp_offsets);
+        int32_t *temp_offsets = (int32_t *)malloc(sizeof(int32_t) * wf_length);
+        for (int i = 0; i < wf_length; ++i) temp_offsets[i] = OFFSET_NULL;
+        CHECK(cudaMemcpy(d_offsets, temp_offsets, sizeof(int32_t) * wf_length, cudaMemcpyHostToDevice));
+        free(temp_offsets);
 
-            int max_score_scope = max(penalty_gap_open + penalty_gap_ext, penalty_mismatch) + 1;
-            int hi = max_score_scope + 1;
-            int lo = -max_score_scope - 1;
+        int max_score_scope = max(penalty_gap_open + penalty_gap_ext, penalty_mismatch) + 1;
+        int hi = max_score_scope + 1;
+        int lo = -max_score_scope - 1;
 
-            dim3 blocks(current_batch_size);
-            dim3 threads(NUM_THREADS);
-            biWFA_kernel<<<blocks, threads>>>(d_pattern_concat, d_text_concat, d_pattern_r_concat, d_text_r_concat,
-                                              d_pattern_lengths, d_text_lengths, d_pattern_offsets, d_text_offsets,
-                                              d_breakpoint_score,
-                                              d_mwavefronts_f, d_iwavefronts_f, d_dwavefronts_f,
-                                              d_mwavefronts_r, d_iwavefronts_r, d_dwavefronts_r,
-                                              lo, hi, d_offsets, max_score_scope,
-                                              d_matrix_wf_m_f, d_matrix_wf_i_f, d_matrix_wf_d_f,
-                                              d_matrix_wf_m_r, d_matrix_wf_i_r, d_matrix_wf_d_r);
+        dim3 blocks(current_batch_size);
+        dim3 threads(NUM_THREADS);
+        biWFA_kernel<<<blocks, threads>>>(d_pattern_concat, d_text_concat, d_pattern_r_concat, d_text_r_concat,
+                                          d_pattern_lengths, d_text_lengths, d_pattern_offsets, d_text_offsets,
+                                          d_breakpoint_score,
+                                          d_mwavefronts_f, d_iwavefronts_f, d_dwavefronts_f,
+                                          d_mwavefronts_r, d_iwavefronts_r, d_dwavefronts_r,
+                                          lo, hi, d_offsets, max_score_scope,
+                                          d_matrix_wf_m_f, d_matrix_wf_i_f, d_matrix_wf_d_f,
+                                          d_matrix_wf_m_r, d_matrix_wf_i_r, d_matrix_wf_d_r);
 
-            CHECK(cudaGetLastError());
-            CHECK(cudaDeviceSynchronize());
+        CHECK(cudaGetLastError());
+        CHECK(cudaDeviceSynchronize());
 
-            int *breakpoint_score = (int *)malloc(sizeof(int) * current_batch_size);
-            CHECK(cudaMemcpy(breakpoint_score, d_breakpoint_score, sizeof(int) * current_batch_size, cudaMemcpyDeviceToHost));
+        int *breakpoint_score = (int *)malloc(sizeof(int) * current_batch_size);
+        CHECK(cudaMemcpy(breakpoint_score, d_breakpoint_score, sizeof(int) * current_batch_size, cudaMemcpyDeviceToHost));
 
-            printf("\nResults for batch %d-%d:\n", offset, offset + current_batch_size - 1);
-            for (int i = 0; i < current_batch_size; ++i) {
-                printf("Alignment %d: GPU Score = %d\n", offset + i, breakpoint_score[i]);
-                gpu_scores[offset + i] = breakpoint_score[i];
-            }
+        auto batch_end = std::chrono::high_resolution_clock::now(); 
+        std::chrono::duration<double> batch_duration = batch_end - batch_start;
+        double alignments_per_second = current_batch_size / batch_duration.count();
 
-            bool all_correct = true;
-
-         int num_checks = current_batch_size;
-         printf("\nCheck CPU-WFA on %d alignments of batch %d-%d:\n", num_checks, offset, offset + current_batch_size - 1);
-
+        printf("\nResults for batch %d-%d:\n", offset, offset + current_batch_size - 1);
+        printf("Batch time: %.6f seconds | Alignments per second: %.2f\n", batch_duration.count(), alignments_per_second);
 
         wavefront_aligner_attr_t attributes = wavefront_aligner_attr_default;
         attributes.distance_metric = gap_affine;
@@ -943,66 +953,67 @@ int main(int argc, char *argv[]) {
             wavefront_align(wf_aligner, pattern, pattern_len, text, text_len);
             int cpu_score = wf_aligner->cigar->score;
             int gpu_score = breakpoint_score[check_idx];
-            printf("Alignment %d: CPU Score = %d | GPU Score = %d\n", offset + check_idx, cpu_score, gpu_score);
 
-            if (cpu_score != gpu_score) {
-                printf("Mismatch detected in alignment %d: CPU Score = %d, GPU Score = %d\n", offset + check_idx, cpu_score, gpu_score);
+            printf("Alignment %d:\n", offset + check_idx);
+            printf("CPU Score: %d\n", cpu_score);
+            printf("GPU Score: %d\n", gpu_score);
+            printf("Match: %s\n\n", (cpu_score == gpu_score) ? "YES" : "NO");
+
+            if (cpu_score == gpu_score) {
+                correct_alignments++; 
             }
         }
 
         wavefront_aligner_delete(wf_aligner);
 
-                free(breakpoint_score);
-                cudaFree(d_pattern_concat); 
-                cudaFree(d_text_concat);
-                cudaFree(d_pattern_r_concat); 
-                cudaFree(d_text_r_concat);
-                cudaFree(d_pattern_lengths); 
-                cudaFree(d_text_lengths);
-                cudaFree(d_pattern_offsets); 
-                cudaFree(d_text_offsets);
-                cudaFree(d_breakpoint_score); 
-                cudaFree(d_offsets);
-                cudaFree(d_mwavefronts_f); 
-                cudaFree(d_iwavefronts_f); 
-                cudaFree(d_dwavefronts_f);
-                cudaFree(d_mwavefronts_r); 
-                cudaFree(d_iwavefronts_r); 
-                cudaFree(d_dwavefronts_r);
-                cudaFree(d_matrix_wf_m_f);
-                cudaFree(d_matrix_wf_i_f); 
-                cudaFree(d_matrix_wf_d_f);
-                cudaFree(d_matrix_wf_m_r); 
-                cudaFree(d_matrix_wf_i_r); 
-                cudaFree(d_matrix_wf_d_r);
-                free(pattern_concat); 
-                free(text_concat);
-                free(pattern_r_concat); 
-                free(text_r_concat);
-                free(pattern_lengths); 
-                free(text_lengths);
-                free(pattern_offsets); 
-                free(text_offsets);
-                continue;
-
-                free(pattern_concat); 
-                free(text_concat);
-                free(pattern_r_concat); 
-                free(text_r_concat);
-                free(pattern_lengths); 
-                free(text_lengths);
-                free(pattern_offsets); 
-                free(text_offsets);
-                free(gpu_scores);
-                fclose(fp);
-                return 1;
+        free(breakpoint_score);
+        cudaFree(d_pattern_concat); 
+        cudaFree(d_text_concat);
+        cudaFree(d_pattern_r_concat); 
+        cudaFree(d_text_r_concat);
+        cudaFree(d_pattern_lengths); 
+        cudaFree(d_text_lengths);
+        cudaFree(d_pattern_offsets); 
+        cudaFree(d_text_offsets);
+        cudaFree(d_breakpoint_score); 
+        cudaFree(d_offsets);
+        cudaFree(d_mwavefronts_f); 
+        cudaFree(d_iwavefronts_f); 
+        cudaFree(d_dwavefronts_f);
+        cudaFree(d_mwavefronts_r); 
+        cudaFree(d_iwavefronts_r); 
+        cudaFree(d_dwavefronts_r);
+        cudaFree(d_matrix_wf_m_f);
+        cudaFree(d_matrix_wf_i_f); 
+        cudaFree(d_matrix_wf_d_f);
+        cudaFree(d_matrix_wf_m_r); 
+        cudaFree(d_matrix_wf_i_r); 
+        cudaFree(d_matrix_wf_d_r);
+        free(pattern_concat); 
+        free(text_concat);
+        free(pattern_r_concat); 
+        free(text_r_concat);
+        free(pattern_lengths); 
+        free(text_lengths);
+        free(pattern_offsets); 
+        free(text_offsets);
     }
-    
+
     auto total_end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> total_duration = total_end - total_start;
-    printf("\nTotal execution time: %.3f seconds\n", total_duration.count());
+
+    double alignments_per_second = num_alignments / total_duration.count();
+
+    printf("\nTotal correct alignments: %d\n", correct_alignments);
+    printf("Total execution time: %.3f seconds\n", total_duration.count());
+    printf("Alignments per second: %.3f\n", alignments_per_second);
+
+    fprintf(csv_file, "Total correct alignments,%d\n", correct_alignments);
+    fprintf(csv_file, "Total execution time (seconds),%.3f\n", total_duration.count());
+    fprintf(csv_file, "Alignments per second,%.3f\n", alignments_per_second);
 
     free(gpu_scores);
     fclose(fp);
+    fclose(csv_file);
     return 0;
 }
