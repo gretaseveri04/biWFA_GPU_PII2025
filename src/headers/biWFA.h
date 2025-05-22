@@ -6,7 +6,6 @@
 
 #define OFFSET_NULL (int32_t)(INT32_MIN/2)
 #define NUM_THREADS 32
-#define MAX_ACTIVE_WAVEFRONTS 10
 #define max_alignment_steps 10000
 #define penalty_mismatch 4
 #define penalty_gap_open 6

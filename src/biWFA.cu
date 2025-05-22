@@ -781,7 +781,7 @@ int main(int argc, char *argv[]) {
     }
 
     int *gpu_scores = (int *)malloc(sizeof(int) * num_alignments);
-    auto total_start = std::chrono::high_resolution_clock::now();
+    float tot_ex_time = 0;
 
     size_t free_mem, total_mem;
     cudaMemGetInfo(&free_mem, &total_mem);
@@ -805,8 +805,6 @@ int main(int argc, char *argv[]) {
         int current_batch_size = (offset + max_batch_size <= num_alignments)
                                  ? max_batch_size
                                  : (num_alignments - offset);
-
-        auto batch_start = std::chrono::high_resolution_clock::now(); 
 
         int *pattern_lengths = (int *)malloc(sizeof(int) * current_batch_size);
         int *text_lengths = (int *)malloc(sizeof(int) * current_batch_size);
@@ -916,6 +914,7 @@ int main(int argc, char *argv[]) {
         int hi = max_score_scope + 1;
         int lo = -max_score_scope - 1;
 
+        auto total_start = std::chrono::high_resolution_clock::now(); 
         dim3 blocks(current_batch_size);
         dim3 threads(NUM_THREADS);
         biWFA_kernel<<<blocks, threads>>>(d_pattern_concat, d_text_concat, d_pattern_r_concat, d_text_r_concat,
@@ -930,15 +929,13 @@ int main(int argc, char *argv[]) {
         CHECK(cudaGetLastError());
         CHECK(cudaDeviceSynchronize());
 
+        auto total_end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> total_duration = total_end - total_start;
+
         int *breakpoint_score = (int *)malloc(sizeof(int) * current_batch_size);
         CHECK(cudaMemcpy(breakpoint_score, d_breakpoint_score, sizeof(int) * current_batch_size, cudaMemcpyDeviceToHost));
 
-        auto batch_end = std::chrono::high_resolution_clock::now(); 
-        std::chrono::duration<double> batch_duration = batch_end - batch_start;
-        double alignments_per_second = current_batch_size / batch_duration.count();
-
         printf("\nResults for batch %d-%d:\n", offset, offset + current_batch_size - 1);
-        printf("Batch time: %.6f seconds | Alignments per second: %.2f\n", batch_duration.count(), alignments_per_second);
 
         wavefront_aligner_attr_t attributes = wavefront_aligner_attr_default;
         attributes.distance_metric = gap_affine;
@@ -997,20 +994,17 @@ int main(int argc, char *argv[]) {
         free(text_lengths);
         free(pattern_offsets); 
         free(text_offsets);
+
+        tot_ex_time += total_duration.count();
     }
 
-    auto total_end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> total_duration = total_end - total_start;
-
-    double alignments_per_second = num_alignments / total_duration.count();
+    printf("\nTotal execution time: %f\n", tot_ex_time);
+    double alignments_per_second = num_alignments / tot_ex_time;
+    printf("\nAlignments per second: %.3f\n", alignments_per_second);
+    double gcups = (double(pattern_len) * double(text_len) * double(num_alignments)) / (tot_ex_time * 1e9);
+    printf("GCUPS: %.3f\n", gcups);
 
     printf("\nTotal correct alignments: %d\n", correct_alignments);
-    printf("Total execution time: %.3f seconds\n", total_duration.count());
-    printf("Alignments per second: %.3f\n", alignments_per_second);
-
-    fprintf(csv_file, "Total correct alignments,%d\n", correct_alignments);
-    fprintf(csv_file, "Total execution time (seconds),%.3f\n", total_duration.count());
-    fprintf(csv_file, "Alignments per second,%.3f\n", alignments_per_second);
 
     free(gpu_scores);
     fclose(fp);

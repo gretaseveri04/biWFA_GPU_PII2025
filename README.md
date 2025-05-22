@@ -1,1 +1,1 @@
-# biWFA_GPU_PII2025
+# biWFA algorithm on GPU
